@@ -1,48 +1,59 @@
 import cv2
-import face_recognition
-import pandas as pd
-from datetime import datetime
 import os
-from openpyxl import load_workbook
+import numpy as np
+import pandas as pd
 import logging
+from datetime import datetime
+from insightface.app import FaceAnalysis
+from sklearn.metrics.pairwise import cosine_similarity
 
-# Constants
-KNOWN_FACES_DIR = '##Change this with your known faces directory or location ## '
-ATTENDANCE_FILE = '##Change this with your attendance.xlsx file directory or location ##'
+# ================== CONSTANTS ==================
+KNOWN_FACES_DIR = r"##Change this with your known faces directory or location ##"
+ATTENDANCE_FILE = r"##Change this with your attendance.xlsx location ##"
+SIMILARITY_THRESHOLD = 0.5  # adjust if needed
 
-# Set up logging
-logging.basicConfig(filename='attendance.log', level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
+# ================== LOGGING ==================
+logging.basicConfig(
+    filename="attendance.log",
+    level=logging.ERROR,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
+# ================== MODELS ==================
+face_app = FaceAnalysis(name="buffalo_l")
+face_app.prepare(ctx_id=-1)  # CPU
 
+# ================== LOAD KNOWN FACES ==================
 def load_known_faces(directory):
-    """
-    Load known faces from the specified directory.
-
-    """
     if not os.path.exists(directory):
         print("Known faces directory does not exist.")
         return [], []
 
-    known_faces = []
-    known_names = []
+    embeddings = []
+    names = []
 
     for filename in os.listdir(directory):
-        if filename.endswith('.jpg') or filename.endswith('.png'):
+        if filename.lower().endswith((".jpg", ".png")):
             try:
-                image = face_recognition.load_image_file(f"{directory}/{filename}")
-                encoding = face_recognition.face_encodings(image)[0]
-                known_faces.append(encoding)
-                known_names.append(filename.split('.')[0])
+                path = os.path.join(directory, filename)
+                image = cv2.imread(path)
+                rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+                faces = face_app.get(rgb)
+                if not faces:
+                    print(f"No face found in {filename}")
+                    continue
+
+                embeddings.append(faces[0].embedding)
+                names.append(os.path.splitext(filename)[0])
+
             except Exception as e:
                 print(f"Error loading {filename}: {e}")
 
-    return known_faces, known_names
+    return np.array(embeddings), np.array(names)
 
+# ================== CAPTURE IMAGE ==================
 def capture_image():
-    """
-    Capture an image from the default camera.
-
-    """
     cam = cv2.VideoCapture(0)
 
     while True:
@@ -51,95 +62,107 @@ def capture_image():
             print("Failed to grab frame")
             break
 
-        # Convert the frame to RGB for face recognition
-        rgb_frame = frame[:, :, ::-1]
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = face_app.get(rgb)
 
-        # Find all the faces in the current frame
-        face_locations = face_recognition.face_locations(rgb_frame)
+        if results:
+            for face in results:
+                # Get bounding box from face object
+                bbox = face.bbox.astype(int)
+                x1, y1, x2, y2 = bbox
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
 
-        # Draw rectangles around the faces
-        for (top, right, bottom, left) in face_locations:
-            cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 255), 2)
-
-        cv2.imshow('Press Space to capture', frame)
-        if cv2.waitKey(1) & 0xFF == ord(' '):
-            break
+        cv2.imshow("Press SPACE to capture", frame)
+        if cv2.waitKey(1) & 0xFF == ord(" "):
+            cam.release()
+            cv2.destroyAllWindows()
+            return frame
 
     cam.release()
     cv2.destroyAllWindows()
-    return frame if ret else None
+    return None
 
-def recognize_face(captured_image, known_faces, known_names):
-    """
-    Recognize faces in the captured image.
-
-    """
+# ================== RECOGNIZE FACE ==================
+def recognize_face(image, known_embeddings, known_names):
     try:
-        face_encodings = face_recognition.face_encodings(captured_image)
-        if len(face_encodings) == 0:
-            print("No  known faces detected in the image.")
+        faces = face_app.get(image)
+        if not faces:
+            print("No face detected.")
             return []
 
-        recognized_faces = []
-        for face_encoding in face_encodings:
-            matches = face_recognition.compare_faces(known_faces, face_encoding)
-            if True in matches:
-                first_match_index = matches.index(True)
-                recognized_faces.append(known_names[first_match_index])
+        recognized = []
 
-        return recognized_faces
+        for face in faces:
+            emb = face.embedding.reshape(1, -1)
+            similarities = cosine_similarity(emb, known_embeddings)
+            best_idx = np.argmax(similarities)
+            score = similarities[0][best_idx]
+
+            if score >= SIMILARITY_THRESHOLD:
+                recognized.append(known_names[best_idx])
+
+        return recognized
+
     except Exception as e:
-        print(f"Error recognizing face: {e}")
+        print(f"Recognition error: {e}")
         return []
 
+# ================== MARK ATTENDANCE ==================
 def mark_attendance(student_name, file=ATTENDANCE_FILE):
     try:
         now = datetime.now()
-        current_date = now.strftime("%Y-%m-%d")
-        current_time = now.strftime("%H:%M:%S")
-        current_month = now.strftime("%B")  
+        date = now.strftime("%Y-%m-%d")
+        time = now.strftime("%H:%M:%S")
+        month = now.strftime("%B")
 
-        try:
+        if os.path.exists(file):
             df = pd.read_excel(file)
-        except FileNotFoundError:
-            # Create the file if it doesn't exist
-            df = pd.DataFrame(columns=["Name", "Date", "Time", "Days_Present", "Month"])
-            df.to_excel(file, index=False)
-        
-        if student_name in df[df["Date"] == current_date]["Name"].values:
-            print(f"Attendance already marked for {student_name} on {current_date}.")
         else:
-            # Check if student has an existing record for the current month
-            student_monthly_record = df[(df["Name"] == student_name) & (df["Month"] == current_month)]
-            if not student_monthly_record.empty:
-                # Get the current days present count
-                days_present = student_monthly_record["Days_Present"].max() + 1
-            else:
-                days_present = 1
-            
-            # Add a new record for the current month
-            new_record_df = pd.DataFrame({"Name": [student_name], "Date": [current_date], "Time": [current_time], "Days_Present": [days_present], "Month": [current_month]})
-            df = pd.concat([df, new_record_df], ignore_index=True)
-            # Write the DataFrame to the Excel file
-            df.to_excel(file, index=False)
-            print(f"Attendance marked for {student_name}.")
+            df = pd.DataFrame(columns=["Name", "Date", "Time", "Days_Present", "Month"])
+
+        if ((df["Name"] == student_name) & (df["Date"] == date)).any():
+            print(f"Attendance already marked for {student_name}")
+            return
+
+        monthly = df[(df["Name"] == student_name) & (df["Month"] == month)]
+        days_present = monthly["Days_Present"].max() + 1 if not monthly.empty else 1
+
+        new_row = {
+            "Name": student_name,
+            "Date": date,
+            "Time": time,
+            "Days_Present": days_present,
+            "Month": month
+        }
+
+        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+        df.to_excel(file, index=False)
+
+        print(f"Attendance marked for {student_name}")
+
     except Exception as e:
-        logging.error(f"Error marking attendance: {e}")
+        logging.error(f"Attendance error: {e}")
 
-
+# ================== MAIN ==================
 def main():
-    known_faces, known_names = load_known_faces(KNOWN_FACES_DIR)
+    known_embeddings, known_names = load_known_faces(KNOWN_FACES_DIR)
+
+    if len(known_embeddings) == 0:
+        print("No known faces loaded.")
+        return
+
     image = capture_image()
     if image is None:
         return
 
-    recognized_faces = recognize_face(image, known_faces, known_names)
-    if not recognized_faces:
+    recognized = recognize_face(image, known_embeddings, known_names)
+
+    if not recognized:
         print("Student not recognized!")
         return
 
-    for student_name in recognized_faces:
-        mark_attendance(student_name)
+    for name in recognized:
+        mark_attendance(name)
 
 if __name__ == "__main__":
     main()
