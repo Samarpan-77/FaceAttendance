@@ -5,3 +5,5 @@ numpy
 pandas
 openpyxl
 cmake
+insightface>=0.7.3
+scikit-learn
