@@ -12,7 +12,7 @@ from flask import Flask, render_template, request, jsonify
 
 # ================== CONSTANTS ==================
 KNOWN_FACES_DIR = r"Location to Students Images"
-ATTENDANCE_FILE = r"Location to Your xlms file"
+ATTENDANCE_FILE = r"Location to Your xlxs file"
 SIMILARITY_THRESHOLD = 0.5  # adjust if needed
 
 # ================== LOGGING ==================
