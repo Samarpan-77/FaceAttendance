@@ -1,0 +1,173 @@
+﻿<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FaceAttendance</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  </head>
+  <body>
+    <main class="page">
+      <section class="card">
+        <header class="header">
+          <h1>FaceAttendance</h1>
+          <p>Allow camera access, then click Capture to mark attendance.</p>
+        </header>
+
+        <div class="camera">
+          <video id="video" autoplay playsinline></video>
+          <canvas id="canvas" width="640" height="480"></canvas>
+        </div>
+
+        <div class="actions">
+          <button class="cta" id="startBtn" type="button">Start Camera</button>
+          <button class="cta" id="stopBtn" type="button" disabled>Stop Camera</button>
+          <button class="cta" id="captureBtn" type="button" disabled>Capture</button>
+        </div>
+
+        <div class="actions">
+          <input id="studentName" class="input" type="text" placeholder="Student name" />
+          <button class="cta" id="addStudentBtn" type="button" disabled>Add Student</button>
+        </div>
+
+        <div id="status" class="status">Camera not started.</div>
+
+        <div id="result" class="result hidden"></div>
+      </section>
+    </main>
+
+    <script>
+      const video = document.getElementById('video');
+      const canvas = document.getElementById('canvas');
+      const startBtn = document.getElementById('startBtn');
+      const stopBtn = document.getElementById('stopBtn');
+      const captureBtn = document.getElementById('captureBtn');
+      const addStudentBtn = document.getElementById('addStudentBtn');
+      const studentNameInput = document.getElementById('studentName');
+      const statusEl = document.getElementById('status');
+      const resultEl = document.getElementById('result');
+      const ctx = canvas.getContext('2d');
+      let stream = null;
+
+      async function startCamera() {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ video: true });
+          video.srcObject = stream;
+          statusEl.textContent = 'Camera started.';
+          captureBtn.disabled = false;
+          stopBtn.disabled = false;
+          addStudentBtn.disabled = false;
+        } catch (err) {
+          statusEl.textContent = 'Camera permission denied or unavailable.';
+        }
+      }
+
+      function stopCamera() {
+        if (stream) {
+          stream.getTracks().forEach(track => track.stop());
+          stream = null;
+        }
+        video.srcObject = null;
+        captureBtn.disabled = true;
+        stopBtn.disabled = true;
+        addStudentBtn.disabled = true;
+        statusEl.textContent = 'Camera stopped.';
+      }
+
+      async function addStudent() {
+        if (!stream) {
+          statusEl.textContent = 'Start the camera first.';
+          return;
+        }
+        const name = studentNameInput.value.trim();
+        if (!name) {
+          statusEl.textContent = 'Enter a student name.';
+          return;
+        }
+
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/png');
+
+        statusEl.textContent = 'Saving student...';
+        resultEl.classList.add('hidden');
+        resultEl.innerHTML = '';
+
+        try {
+          const res = await fetch('/add_student', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, image: dataUrl })
+          });
+
+          const data = await res.json();
+          resultEl.classList.remove('hidden');
+          if (data.status === 'saved') {
+            statusEl.textContent = 'Student saved.';
+            resultEl.innerHTML = `<h2>Student Saved</h2><p>${data.message}</p>`;
+          } else {
+            statusEl.textContent = 'Student not saved.';
+            resultEl.innerHTML = `<h2>Student Not Saved</h2><p>${data.message || 'Please try again.'}</p>`;
+          }
+        } catch (err) {
+          statusEl.textContent = 'Failed to reach server.';
+        }
+      }
+
+      async function captureFrame() {
+        if (!stream) {
+          statusEl.textContent = 'Start the camera first.';
+          return;
+        }
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/png');
+
+        statusEl.textContent = 'Processing...';
+        resultEl.classList.add('hidden');
+        resultEl.innerHTML = '';
+
+        try {
+          const res = await fetch('/capture', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image: dataUrl })
+          });
+
+          const data = await res.json();
+          renderResult(data);
+        } catch (err) {
+          statusEl.textContent = 'Failed to reach server.';
+        }
+      }
+
+      function renderResult(data) {
+        resultEl.classList.remove('hidden');
+        if (data.status === 'done') {
+          statusEl.textContent = 'Attendance updated.';
+          let list = '<h2>Attendance Updated</h2><ul>';
+          for (const [name, status] of data.recognized) {
+            let cls = status === 'marked' ? 'ok' : (status === 'already_marked' ? 'warn' : 'err');
+            let label = status === 'marked' ? 'marked' : (status === 'already_marked' ? 'already marked today' : 'error');
+            list += `<li><strong>${name}</strong><span class="${cls}">${label}</span></li>`;
+          }
+          list += '</ul>';
+          resultEl.innerHTML = list;
+          return;
+        }
+
+        if (data.status === 'not_recognized') {
+          statusEl.textContent = 'Not recognized.';
+          resultEl.innerHTML = `<h2>Not Recognized</h2><p>${data.message}</p>`;
+          return;
+        }
+
+        statusEl.textContent = 'Capture issue.';
+        resultEl.innerHTML = `<h2>Capture Issue</h2><p>${data.message || 'Please try again.'}</p>`;
+      }
+
+      startBtn.addEventListener('click', startCamera);
+      stopBtn.addEventListener('click', stopCamera);
+      captureBtn.addEventListener('click', captureFrame);
+      addStudentBtn.addEventListener('click', addStudent);
+    </script>
+  </body>
+</html>
